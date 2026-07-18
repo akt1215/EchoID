@@ -78,6 +78,7 @@ class SCKCaptureSource:
         self._mode = None
         self._mode_event = threading.Event()
         self.mic_name = None
+        self._decode_error = None
 
     def is_alive(self):
         """True while the helper subprocess is running (delivering audio)."""
@@ -111,17 +112,33 @@ class SCKCaptureSource:
 
     def _read_stdout(self):
         stdout = self._proc.stdout
-        while True:
-            raw = stdout.read1(_READ_BLOCK)  # returns as soon as any data is available
-            if not raw:
-                break  # EOF: helper exited
-            self._decoder.feed(raw)
+        try:
+            while True:
+                raw = stdout.read1(_READ_BLOCK)  # returns as soon as any data is available
+                if not raw:
+                    break  # EOF: helper exited
+                self._decoder.feed(raw)
+        except Exception as e:
+            # A protocol desync (e.g. an unknown frame type) must not silently kill
+            # this daemon thread and leave the pipe to fill and capture to freeze.
+            # Record it and terminate the helper so is_alive() flips and the
+            # recorder's stall path can pad silence instead of hanging.
+            self._decode_error = e
+            self._on_stderr(f"[sck] decode error: {e}\n")
+            try:
+                self._proc.terminate()
+            except Exception:
+                pass
 
     def _read_stderr(self):
         for line in self._proc.stderr:
             decoded = line.decode("utf-8", "replace")
             self._stderr_tail.append(decoded)
+            # The helper prefixes every stderr line with "[sck] "; strip it before
+            # matching the machine-readable RESULT= handshake tokens.
             s = decoded.strip()
+            if s.startswith("[sck] "):
+                s = s[len("[sck] "):]
             if s.startswith("RESULT=MODE "):
                 self._mode = s[len("RESULT=MODE "):].strip()
                 self._mode_event.set()

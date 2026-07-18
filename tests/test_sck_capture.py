@@ -80,10 +80,13 @@ def _write_fake(tmp_path, name, body):
     return str(p)
 
 
-# Announce mode + mic, then stream one mic frame and one system frame.
+# Announce mic + mode, then stream one mic frame and one system frame. Mirrors the
+# real Swift helper's stderr EXACTLY: every line is "[sck] "-prefixed, and RESULT=MIC
+# is written BEFORE RESULT=MODE (so mic_name is set by the time the mode event fires,
+# which start() relies on).
 _FRAMED_BURST = (
     "import struct, sys\n"
-    "sys.stderr.write('RESULT=MODE mic+system\\n'); sys.stderr.write('RESULT=MIC Fake Mic\\n'); sys.stderr.flush()\n"
+    "sys.stderr.write('[sck] RESULT=MIC Fake Mic\\n'); sys.stderr.write('[sck] RESULT=MODE mic+system\\n'); sys.stderr.flush()\n"
     "def f(t, xs): return struct.pack('<BI', t, len(xs)) + b''.join(struct.pack('<f', x) for x in xs)\n"
     "sys.stdout.buffer.write(f(0, [1.0, 2.0]) + f(1, [3.0, 4.0, 5.0]))\n"
     "sys.stdout.buffer.flush()\n"
