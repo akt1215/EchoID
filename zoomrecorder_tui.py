@@ -874,7 +874,10 @@ class RecordingScreen(Screen):
         if self.vision:
             self.active_speaker = str(self.vision.frame_count)
         if self.recorder:
-            if self.recorder.ch1_silent:
+            if self.recorder.mic_silent:
+                self.warning = ("No microphone audio (ch0) — grant Microphone "
+                                "permission and restart to capture your voice")
+            elif self.recorder.ch1_silent:
                 self.warning = ("No system audio (ch1) — grant Screen Recording "
                                 "permission and restart to capture remote speech")
             elif self.recorder.stalled_side:

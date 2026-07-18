@@ -315,6 +315,11 @@ def main():
             print(f"\n[error] Cannot start recording:\n{e}")
             vision.stop()
             return
+        if getattr(recorder, "sck_mic_name", None):
+            print(f"Microphone (ch0): {recorder.sck_mic_name}")
+        if getattr(recorder, "mic_silent", False):
+            print("[warning] No microphone audio detected — grant Microphone permission "
+                  "to this terminal and relaunch if your own voice is missing.")
         try:
             input("Recording... Press ENTER to stop meeting.\n")
         except (KeyboardInterrupt, EOFError):

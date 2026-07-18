@@ -122,6 +122,11 @@ with open('$PYANN_IO', 'w') as f:
 fi
 
 # 6. Build the ScreenCaptureKit audio helper (replaces BlackHole on the sck backend)
+# The helper uses SCStreamConfiguration.captureMicrophone (macOS 15 SDK) to capture
+# the mic + system audio on one clock. The macOS-15 API is guarded at runtime with
+# #available, but building requires the macOS 15+ SDK (Xcode 16+). The sck backend
+# requires macOS 15+ at runtime; on older macOS the helper exits with an error — use
+# audio.capture_backend: blackhole there.
 SCK_SRC="$ROOT/native/sck_capture.swift"
 SCK_BIN="$ROOT/native/sck_capture"
 if [ -f "$SCK_SRC" ]; then

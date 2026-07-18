@@ -159,19 +159,27 @@ The `record.sh` wrapper sets `OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES` to preven
 
 ## Audio Setup (one-time)
 
-By default the app captures remote/system audio with **ScreenCaptureKit**
-(`audio.capture_backend: sck` in `config.yaml`) — nothing to install, but it
-needs one permission:
+By default the app captures **both the microphone and remote/system audio in one
+ScreenCaptureKit stream** (`audio.capture_backend: sck` in `config.yaml`) — nothing to
+install, but it requires **macOS 15 or newer** and two permissions:
 
 1. Grant **Screen Recording** to your terminal app (Terminal / iTerm / VS Code)
    in **System Settings → Privacy & Security → Screen Recording**. ScreenCaptureKit
    requires this even for audio-only capture.
-2. **Quit and reopen the terminal** — the permission only takes effect on relaunch.
+2. Grant **Microphone** to the same terminal app in **System Settings → Privacy &
+   Security → Microphone** — the same grant the mic already needed; a fresh machine
+   prompts once on first record.
+3. **Quit and reopen the terminal** — permissions only take effect on relaunch.
 
-ScreenCaptureKit *taps* system output rather than rerouting it, so you keep hearing
-the meeting normally and there is no relay to drift or skip. If capture comes back
-silent and you see `[sck] WARNING: no audio buffers after 2s`, this permission is
-almost always the cause.
+Because the mic and system audio now ride the **same ScreenCaptureKit clock**, the two
+WAV channels can no longer drift apart (the old growing left/right delay on earbud
+playback is fixed). ScreenCaptureKit *taps* system output rather than rerouting it, so
+you keep hearing the meeting normally. If capture comes back silent and you see
+`[sck] WARNING: no audio buffers after 2s` (Screen Recording) or `no microphone buffers
+after 2s` (Microphone), those permissions are almost always the cause.
+
+The `sck` backend requires **macOS 15+**; on older macOS it fails loud — use the legacy
+BlackHole backend below (it still uses two clocks and can drift).
 
 ### Legacy BlackHole backend (fallback)
 
