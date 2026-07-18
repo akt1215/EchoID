@@ -279,14 +279,12 @@ def main():
                     print("Could not auto-detect mic or BlackHole. Use --list to see devices, then specify --mic / --bh manually.")
                     return
                 print(f"Auto-detected: --mic {args.mic} --bh {args.bh}")
-        else:  # sck: no BlackHole device needed, only the mic
-            if args.mic is None:
-                detected_mic, _ = _auto_detect_devices()
-                args.mic = detected_mic
-                if args.mic is None:
-                    print("Could not auto-detect a microphone. Use --list to see devices, then specify --mic.")
-                    return
-                print(f"Auto-detected: --mic {args.mic}")
+        else:  # sck: the mic is SCK's system default input (Phase 1), not a
+               # sounddevice index — nothing to auto-detect. --mic is not honored on
+               # this backend yet; the opened mic is printed at record start.
+            if args.mic is not None:
+                print("[note] --mic is ignored on the sck backend (Phase 1 uses the "
+                      "system default input).")
 
         print("\n--- Starting Meeting Notetaker ---")
         start_time = datetime.datetime.now()
