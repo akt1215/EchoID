@@ -1,7 +1,9 @@
+import numpy as np
 import pytest
 
 from core import audio_recorder
 from core.audio_recorder import AudioRecorder, CaptureStartupError
+from core.sck_capture import sck_mode_provides_mic
 
 
 class _DummyStream:
@@ -62,35 +64,60 @@ def test_sck_start_missing_binary_raises_capture_startup_error(tmp_path):
     assert rec.recording is False
 
 
-def test_sck_start_rejects_a_helper_with_a_mismatched_wire_format(tmp_path, monkeypatch):
-    # A stale native/sck_capture from a branch speaking the tagged-frame
-    # protocol must abort the recording. It is alive and streaming, so every
-    # liveness check passes — but ch1 would be full-scale noise for the whole
-    # meeting, unrecoverably (this cost two meetings on 2026-07-28).
-    helper = tmp_path / "fake_framed.py"
-    helper.write_text(
-        "#!/usr/bin/env python3\n"
-        "import struct, sys, signal, time\n"
-        "run = [True]\n"
-        "signal.signal(signal.SIGTERM, lambda *a: run.__setitem__(0, False))\n"
-        "frame = struct.pack('<BI', 1, 960) + struct.pack('<f', 0.0) * 960\n"
-        "while run[0]:\n"
-        "    try:\n"
-        "        sys.stdout.buffer.write(frame); sys.stdout.buffer.flush()\n"
-        "    except BrokenPipeError:\n"
-        "        break\n"
-        "    time.sleep(0.001)\n"
-    )
-    helper.chmod(0o755)
+def _sck_recorder():
+    return AudioRecorder(0, None, "/tmp/x.wav", samplerate=48000,
+                         monitor_enabled=True, capture_backend="sck",
+                         sck_binary_path="/tmp/sck_capture")
 
-    monkeypatch.setattr(audio_recorder.sd, "InputStream", _DummyStream)
-    rec = AudioRecorder(0, None, str(tmp_path / "x.wav"), samplerate=48000,
-                        capture_backend="sck", sck_binary_path=str(helper))
-    rec.zoom_monitor = _DummyMonitor()
 
-    with pytest.raises(CaptureStartupError) as excinfo:
-        rec.start()
-    assert "wire format" in str(excinfo.value)
-    assert "swiftc" in str(excinfo.value)    # tells the user how to fix it
-    assert rec.recording is False
-    assert not hasattr(rec, "writer_thread")  # nothing was ever recorded
+def test_sck_mic_chunk_enqueues_when_not_muted():
+    rec = _sck_recorder()
+    rec._sck_provides_mic = True          # SCK owns the mic (mic+system mode)
+    rec.zoom_monitor.is_muted = False
+    rec._on_sck_mic_chunk(np.array([1.0, 2.0, 3.0], dtype=np.float32))
+    assert np.allclose(rec.mic_queue.get_nowait(), [1.0, 2.0, 3.0])
+
+
+def test_sck_mic_chunk_zeroed_when_muted():
+    rec = _sck_recorder()
+    rec._sck_provides_mic = True
+    rec.zoom_monitor.is_muted = True
+    rec._on_sck_mic_chunk(np.array([1.0, 2.0, 3.0], dtype=np.float32))
+    assert np.allclose(rec.mic_queue.get_nowait(), [0.0, 0.0, 0.0])
+
+
+def test_sck_mic_chunk_dropped_when_sck_does_not_own_mic():
+    # If SCK is not the mic owner, a stray SCK mic frame must NOT reach ch0, so it
+    # can never double up with a sounddevice mic.
+    rec = _sck_recorder()
+    rec._sck_provides_mic = False
+    rec._on_sck_mic_chunk(np.array([1.0, 2.0, 3.0], dtype=np.float32))
+    assert rec.mic_queue.empty()
+
+
+def test_sck_system_chunk_routes_to_bh_queue():
+    rec = _sck_recorder()
+    rec._on_sck_system_chunk(np.array([4.0, 5.0], dtype=np.float32))
+    assert np.allclose(rec.bh_queue.get_nowait(), [4.0, 5.0])
+    assert rec.mic_queue.empty()
+
+
+def test_maybe_zero_muted_passthrough_and_zero():
+    rec = _sck_recorder()
+    rec.zoom_monitor.is_muted = False
+    a = np.array([1.0, 2.0], dtype=np.float32)
+    assert np.allclose(rec._maybe_zero_muted(a), [1.0, 2.0])
+    rec.zoom_monitor.is_muted = True
+    assert np.allclose(rec._maybe_zero_muted(a), [0.0, 0.0])
+
+
+def test_new_recorder_exposes_mic_status_fields():
+    rec = _sck_recorder()
+    assert rec.mic_silent is False
+    assert rec.sck_mic_name is None
+
+
+def test_provides_mic_predicate_drives_sounddevice_decision():
+    # The predicate is the single decision point start() branches on.
+    assert sck_mode_provides_mic("mic+system") is True     # SCK owns the mic
+    assert sck_mode_provides_mic("system-only") is False    # not mic+system -> fail loud

@@ -7,7 +7,7 @@ import time
 import os
 from .zoom_monitor import ZoomMonitor
 from .audio_monitor import AudioMonitor
-from .sck_capture import SCKCaptureSource
+from .sck_capture import SCKCaptureSource, sck_mode_provides_mic
 from .channel_pairer import ChannelPairer
 from .ingest import MARKER as _MARKER
 
@@ -53,6 +53,12 @@ class AudioRecorder:
         self.stalled_side = None      # a producer died mid-recording ('mic'/'bh')
         self._writer_error = None     # exception that killed the writer thread
         self._pairer = ChannelPairer()
+        # True only once start() confirms SCK is delivering the mic (mic+system
+        # mode). Guards _on_sck_mic_chunk so a stray SCK mic frame can never mix
+        # into ch0 alongside a legacy sounddevice mic.
+        self._sck_provides_mic = False
+        self.mic_silent = False       # SCK mic (ch0) delivered nothing at start
+        self.sck_mic_name = None      # name of the mic SCK actually opened
 
         self.zoom_monitor = ZoomMonitor()
         # AudioMonitor only makes sense for the BlackHole reroute. SCK taps audio
@@ -67,12 +73,8 @@ class AudioRecorder:
         """This is called (from a separate thread) for each audio block of the mic."""
         if status:
             print(f"Mic status: {status}")
-
-        # If Zoom is muted, zero out the mic data
-        if self.zoom_monitor.is_muted:
-            indata = np.zeros_like(indata)
-
-        self.mic_queue.put(indata.copy())
+        # Copy first (sounddevice reuses indata); mute-zeroing is shared with SCK.
+        self.mic_queue.put(self._maybe_zero_muted(indata.copy()))
 
     def _bh_callback(self, indata, frames, time, status):
         """This is called (from a separate thread) for each audio block of BlackHole."""
@@ -82,6 +84,27 @@ class AudioRecorder:
         self.bh_queue.put(chunk)
         if self.audio_monitor:
             self.audio_monitor.feed(chunk)
+
+    def _maybe_zero_muted(self, samples):
+        """Zero a mic block while Zoom is muted (so muted audio never reaches the
+        WAV), else return it unchanged. Shared by the sounddevice mic callback and
+        the SCK mic handler so mute works on whichever path is active."""
+        if self.zoom_monitor.is_muted:
+            return np.zeros_like(samples)
+        return samples
+
+    def _on_sck_mic_chunk(self, chunk):
+        """SCK mic leg (ch0). Ignored unless SCK owns the mic (mic+system mode), so
+        it can never double up with a sounddevice mic. Applies Zoom-mute zeroing,
+        then enqueues; the chunk is already a private copy from FramedDecoder."""
+        if not self._sck_provides_mic:
+            return
+        self.mic_queue.put(self._maybe_zero_muted(chunk))
+
+    def _on_sck_system_chunk(self, chunk):
+        """SCK system leg (ch1). No AudioMonitor on the sck backend (SCK taps audio
+        already playing out the speakers)."""
+        self.bh_queue.put(chunk)
 
     @staticmethod
     def _drain_all(q):
@@ -167,70 +190,61 @@ class AudioRecorder:
         print(f"Starting Audio Streams (backend={self.capture_backend})...")
         self.recording = True
 
-        # Construct the mic (ch0) stream identically on both backends; started below.
-        self.mic_stream = sd.InputStream(samplerate=self.samplerate, device=self.mic_device,
-                                         channels=1, callback=self._mic_callback,
-                                         blocksize=512)
-
         if self.capture_backend == "sck":
-            # The SCK helper cold-starts (fork/exec + SCShareableContent + startCapture,
-            # up to ~1s). Start it first and wait until it actually delivers, THEN start
-            # the mic and drop both queues' backlog, so ch0 and ch1 begin from a common
-            # instant — the writer pairs by buffered length, so a startup lead on either
-            # side would bake in a permanent inter-channel skew.
+            # Start the SCK helper first and learn its mode before trusting it for
+            # the mic. On macOS 15+ it captures mic + system on ONE clock, so no
+            # second sounddevice mic is opened (that second clock was the drift source).
             self._sck_source = SCKCaptureSource(
-                self.sck_binary_path, self.samplerate, on_chunk=self.bh_queue.put,
+                self.sck_binary_path, self.samplerate,
+                on_mic_chunk=self._on_sck_mic_chunk,
+                on_system_chunk=self._on_sck_system_chunk,
+                mic_device_id="",                      # Phase 1: system default input
             )
             self._sck_source.start()
-            self._wait_for_first_chunk(self.bh_queue, timeout=5.0)
-            # Distinguish "helper died" (hard failure — abort so we don't record
-            # an empty file all meeting) from "helper alive but delivered nothing"
-            # (probable Screen Recording permission denial — warn loudly but keep
-            # the mic, which is still worth capturing).
-            if not self._sck_source.is_alive():
+            mode = self._sck_source.wait_for_mode(timeout=5.0)
+            self.sck_mic_name = self._sck_source.mic_name
+            # The sck backend requires macOS 15+ mic+system capture. A dead helper
+            # (macOS < 15 -> RESULT=ERROR + exit, or a denied Screen Recording
+            # permission) or any non-"mic+system" mode fails loud, pointing at the
+            # blackhole backend.
+            if not self._sck_source.is_alive() or not sck_mode_provides_mic(mode):
                 tail = self._sck_source.stderr_tail()
-                self._sck_source = None
-                self.recording = False
-                self.zoom_monitor.stop()
-                self.mic_stream.close()  # created above but never started
-                raise CaptureStartupError(
-                    "The ScreenCaptureKit helper exited on startup, so system "
-                    "audio (ch1) cannot be captured. This is usually a denied "
-                    "Screen Recording permission — grant it to this terminal in "
-                    "System Settings > Privacy & Security > Screen Recording, then "
-                    "quit and reopen the terminal.\n"
-                    f"Helper said: {tail or '(no output)'}"
-                )
-            # A helper whose wire format this build cannot decode streams bytes
-            # briskly, so every check above passes while what reaches ch1 is
-            # full-scale noise. Liveness cannot see that; only the bytes can.
-            wire_error = self._sck_source.wait_for_verdict(timeout=2.0)
-            if wire_error:
                 self._sck_source.stop()
                 self._sck_source = None
                 self.recording = False
                 self.zoom_monitor.stop()
-                self.mic_stream.close()  # created above but never started
                 raise CaptureStartupError(
-                    "The ScreenCaptureKit helper's wire format does not match "
-                    f"this build: {wire_error}.\n"
-                    "native/sck_capture is a build artifact that git does not "
-                    "track, so a helper built on another branch survives a "
-                    "checkout and records ch1 as noise. Rebuild it:\n"
-                    "  swiftc -parse-as-library -O native/sck_capture.swift "
-                    "-o native/sck_capture\n"
-                    "(or re-run ./setup.sh)."
+                    "The ScreenCaptureKit helper did not start mic+system capture. The "
+                    "sck backend requires macOS 15+ with Screen Recording AND Microphone "
+                    "permission granted to this terminal (System Settings > Privacy & "
+                    "Security). On older macOS or if permission is denied, set "
+                    "audio.capture_backend: blackhole in config.yaml.\n"
+                    f"Helper said: {tail or '(no output)'}"
                 )
+            self._sck_provides_mic = True
+            # Both channels ride the SCK clock — no sounddevice mic, no drift. Wait
+            # for both to deliver, then drop the startup backlog so they begin from a
+            # common instant; one clock keeps them aligned thereafter.
+            self._wait_for_first_chunk(self.bh_queue, timeout=5.0)
+            self._wait_for_first_chunk(self.mic_queue, timeout=5.0)
             if self.bh_queue.empty():
                 self.ch1_silent = True
-                print("[recorder] WARNING: no system audio (ch1) after 5s — the "
-                      "remote channel may be silent because Screen Recording "
-                      "permission is denied. Recording the mic anyway; check the "
-                      "permission if the meeting note is missing remote speech.")
-            self.mic_stream.start()
+                print("[recorder] WARNING: no system audio (ch1) after 5s — check "
+                      "Screen Recording permission if remote speech is missing.")
+            if self.mic_queue.empty():
+                self.mic_silent = True
+                print("[recorder] WARNING: no microphone audio (ch0) after 5s — grant "
+                      "Microphone permission to this terminal (System Settings > "
+                      "Privacy & Security > Microphone), then quit and reopen it.")
             self._drain_queue(self.bh_queue)
             self._drain_queue(self.mic_queue)
+            print(f"[recorder] SCK capturing mic + system on one clock "
+                  f"(mic: {self.sck_mic_name or 'System Default'}).")
         else:
+            # blackhole backend: two sounddevice clocks (unchanged; still drifts).
+            self.mic_stream = sd.InputStream(samplerate=self.samplerate, device=self.mic_device,
+                                             channels=1, callback=self._mic_callback,
+                                             blocksize=512)
             self.mic_stream.start()
             # Start ch1 back-to-back with ch0 (nothing slow in between): the writer
             # pairs channels by buffered length, so a gap here bakes permanent skew in.
