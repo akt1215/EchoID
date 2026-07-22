@@ -296,7 +296,17 @@ final class Capturer: @unchecked Sendable {
             }
             config.captureMicrophone = true
             config.microphoneCaptureDeviceID = micDeviceID.isEmpty ? nil : micDeviceID
-            logErr("[sck] RESULT=MIC \(resolveMicName())")
+            // An unknown uniqueID is unrecoverable: SCK does NOT fall back to the default
+            // input, it just delivers no microphone buffers at all, which would record a
+            // silent ch0 for the whole meeting. Fail loud instead.
+            guard let micName = resolveMicName() else {
+                logErr("[sck] RESULT=ERROR no audio input device with uniqueID "
+                     + "\"\(micDeviceID)\". ScreenCaptureKit delivers no microphone audio for "
+                     + "an unknown device, so recording would capture a silent mic channel. "
+                     + "Pass a valid AVCaptureDevice uniqueID, or none to use the system default.")
+                exit(5)
+            }
+            logErr("[sck] RESULT=MIC \(micName)")
             logErr("[sck] RESULT=MODE mic+system")
 
             let s = SCStream(filter: filter, configuration: config, delegate: sink)
@@ -331,10 +341,14 @@ final class Capturer: @unchecked Sendable {
         }
     }
 
-    // Localized name of the mic SCK will open, for the record UI. Phase 1 always
-    // uses the system default input (empty uid), so report that device's name.
-    private func resolveMicName() -> String {
-        return AVCaptureDevice.default(for: .audio)?.localizedName ?? "System Default"
+    // Localized name of the mic SCK will actually open, for the record UI: the
+    // requested device when a uniqueID was passed, else the system default. nil means
+    // the requested uniqueID matches no input device on this machine.
+    private func resolveMicName() -> String? {
+        if micDeviceID.isEmpty {
+            return AVCaptureDevice.default(for: .audio)?.localizedName ?? "System Default"
+        }
+        return AVCaptureDevice(uniqueID: micDeviceID)?.localizedName
     }
 }
 
