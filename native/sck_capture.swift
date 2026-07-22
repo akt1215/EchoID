@@ -27,6 +27,43 @@ let TYPE_SYSTEM: UInt8 = 1
 
 func logErr(_ s: String) { FileHandle.standardError.write((s + "\n").data(using: .utf8)!) }
 
+// Converts an incoming buffer to float32 (same rate, same channel count) so the
+// downmix + resample path below can read `floatChannelData`. SCK delivers the
+// microphone in the capture device's NATIVE sample format, which is 16-bit int on
+// some devices (USB audio interfaces and dongles) and float32 on others (the
+// built-in mic) — on an int16 device `floatChannelData` is nil, so reading it
+// directly drops the entire mic leg and records a silent ch0. A no-op when the
+// buffer already is float32.
+final class FloatNormalizer {
+    private var converter: AVAudioConverter?
+    private var inFormat: AVAudioFormat?
+
+    func floatBuffer(_ pcm: AVAudioPCMBuffer, format: AVAudioFormat) -> AVAudioPCMBuffer? {
+        if format.commonFormat == .pcmFormatFloat32 { return pcm }
+        if pcm.frameLength == 0 { return pcm }
+        // Cache on the FULL input format, not just the sample rate: the format varies
+        // per device, so a rate-only key would reuse a converter built for another layout.
+        if converter == nil || !(inFormat?.isEqual(format) ?? false) {
+            guard let out = AVAudioFormat(commonFormat: .pcmFormatFloat32,
+                                          sampleRate: format.sampleRate,
+                                          channels: format.channelCount,
+                                          interleaved: false) else { return nil }
+            converter = AVAudioConverter(from: format, to: out)
+            inFormat = format
+        }
+        guard let converter,
+              let outBuf = AVAudioPCMBuffer(pcmFormat: converter.outputFormat,
+                                            frameCapacity: pcm.frameLength) else { return nil }
+        do {
+            try converter.convert(to: outBuf, from: pcm)
+        } catch {
+            logErr("[sck] float conversion error: \(error.localizedDescription)")
+            return nil
+        }
+        return outBuf
+    }
+}
+
 // Resamples mono float32 to a fixed target rate, preserving converter state across
 // buffers (no per-buffer boundary artifacts). A no-op when source rate == target.
 final class MonoResampler {
@@ -82,8 +119,12 @@ final class AudioSink: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Se
     private let out = FileHandle.standardOutput
     private let micResampler: MonoResampler
     private let sysResampler: MonoResampler
+    private let micNormalizer = FloatNormalizer()
+    private let sysNormalizer = FloatNormalizer()
     private var _buffers = 0
-    private var _micBuffers = 0
+    private var _micCallbacks = 0
+    private var _micSamples = 0
+    private var _micFormatLogged = false
 
     init(sampleRate: Double) {
         self.micResampler = MonoResampler(targetRate: sampleRate)
@@ -93,7 +134,12 @@ final class AudioSink: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Se
     // Lock-guarded accessors: mutated under `lock` on the audio queues, read from
     // the main queue by the 2s "no buffers" check.
     var bufferCount: Int { lock.lock(); defer { lock.unlock() }; return _buffers }
-    var micBufferCount: Int { lock.lock(); defer { lock.unlock() }; return _micBuffers }
+    // Callbacks counted on ARRIVAL and samples counted on EMIT, so the startup check
+    // can tell "the mic never delivered" (permission/device) apart from "it delivered
+    // but nothing survived decoding" (an unsupported format) — one blames the user,
+    // the other blames this helper.
+    var micCallbackCount: Int { lock.lock(); defer { lock.unlock() }; return _micCallbacks }
+    var micSampleCount: Int { lock.lock(); defer { lock.unlock() }; return _micSamples }
 
     private func emit(type: UInt8, _ samples: [Float]) {
         if samples.isEmpty { return }
@@ -108,6 +154,28 @@ final class AudioSink: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Se
         out.write(payload)
         _buffers += 1
         lock.unlock()
+    }
+
+    // Report the mic's native format once — it varies per device and decides whether
+    // the FloatNormalizer has to convert, so it is the first thing worth knowing when
+    // a mic leg comes back silent.
+    private func logMicFormatOnce(_ format: AVAudioFormat) {
+        lock.lock()
+        let first = !_micFormatLogged
+        _micFormatLogged = true
+        lock.unlock()
+        guard first else { return }
+        let depth: String
+        switch format.commonFormat {
+        case .pcmFormatFloat32: depth = "float32"
+        case .pcmFormatFloat64: depth = "float64"
+        case .pcmFormatInt16: depth = "int16"
+        case .pcmFormatInt32: depth = "int32"
+        default: depth = "other"
+        }
+        logErr("[sck] mic native format: \(Int(format.sampleRate)) Hz, "
+             + "\(format.channelCount) ch, \(depth)"
+             + (format.commonFormat == .pcmFormatFloat32 ? "" : " (converting to float32)"))
     }
 
     // Downmix any layout to mono, at the buffer's native rate.
@@ -142,18 +210,24 @@ final class AudioSink: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Se
         var isMic = false
         if #available(macOS 15.0, *) { isMic = (type == .microphone) }
         guard isMic || type == .audio else { return }
+        if isMic { lock.lock(); _micCallbacks += 1; lock.unlock() }
         guard let fmtDesc = sampleBuffer.formatDescription,
               var asbd = fmtDesc.audioStreamBasicDescription,
               let format = AVAudioFormat(streamDescription: &asbd) else { return }
+        if isMic { logMicFormatOnce(format) }
 
         try? sampleBuffer.withAudioBufferList { abl, _ in
-            guard let pcm = AVAudioPCMBuffer(pcmFormat: format,
+            guard let raw = AVAudioPCMBuffer(pcmFormat: format,
                                              bufferListNoCopy: abl.unsafePointer,
                                              deallocator: nil) else { return }
-            let monoNative = mono(pcm, format)
+            // Normalize to float32 first: the mic arrives in its device-native format,
+            // which is not always float (see FloatNormalizer).
+            guard let pcm = (isMic ? micNormalizer : sysNormalizer).floatBuffer(raw, format: format)
+            else { return }
+            let monoNative = mono(pcm, pcm.format)
             if isMic {
                 let resampled = micResampler.process(monoNative, sourceRate: asbd.mSampleRate)
-                lock.lock(); _micBuffers += 1; lock.unlock()
+                lock.lock(); _micSamples += resampled.count; lock.unlock()
                 emit(type: TYPE_MIC, resampled)
             } else {
                 let resampled = sysResampler.process(monoNative, sourceRate: asbd.mSampleRate)
@@ -241,10 +315,15 @@ final class Capturer: @unchecked Sendable {
                          + "permission may be denied to your terminal (System Settings > "
                          + "Privacy & Security > Screen Recording), or nothing is playing.")
                 }
-                if sink.micBufferCount == 0 {
+                if sink.micCallbackCount == 0 {
                     logErr("[sck] WARNING: no microphone buffers after 2s — Microphone "
                          + "permission may be denied to your terminal (System Settings > "
                          + "Privacy & Security > Microphone). The mic (ch0) will be silent.")
+                } else if sink.micSampleCount == 0 {
+                    logErr("[sck] WARNING: microphone buffers are arriving but none could be "
+                         + "decoded after 2s — this is a helper bug, not a permission problem. "
+                         + "The mic (ch0) will be silent; the mic format line above says which "
+                         + "device format failed.")
                 }
             }
         } catch {

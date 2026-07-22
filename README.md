@@ -176,7 +176,11 @@ WAV channels can no longer drift apart (the old growing left/right delay on earb
 playback is fixed). ScreenCaptureKit *taps* system output rather than rerouting it, so
 you keep hearing the meeting normally. If capture comes back silent and you see
 `[sck] WARNING: no audio buffers after 2s` (Screen Recording) or `no microphone buffers
-after 2s` (Microphone), those permissions are almost always the cause.
+after 2s` (Microphone), those permissions are almost always the cause. A third warning,
+`microphone buffers are arriving but none could be decoded`, means the opposite —
+permissions are fine and the helper could not read your input device's sample format;
+the `[sck] mic native format: ...` line above it names the format, and switching the
+system input device is the immediate workaround.
 
 The `sck` backend requires **macOS 15+**; on older macOS it fails loud — use the legacy
 BlackHole backend below (it still uses two clocks and can drift).

@@ -233,9 +233,11 @@ class AudioRecorder:
                       "Screen Recording permission if remote speech is missing.")
             if self.mic_queue.empty():
                 self.mic_silent = True
-                print("[recorder] WARNING: no microphone audio (ch0) after 5s — grant "
-                      "Microphone permission to this terminal (System Settings > "
-                      "Privacy & Security > Microphone), then quit and reopen it.")
+                print("[recorder] WARNING: no microphone audio (ch0) after 5s — check the "
+                      "[sck] lines above: they say whether the mic delivered nothing "
+                      "(grant Microphone permission in System Settings > Privacy & "
+                      "Security, then quit and reopen this terminal) or delivered audio "
+                      "the helper could not decode.")
             self._drain_queue(self.bh_queue)
             self._drain_queue(self.mic_queue)
             print(f"[recorder] SCK capturing mic + system on one clock "
