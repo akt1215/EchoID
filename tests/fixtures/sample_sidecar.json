@@ -1,0 +1,17 @@
+{
+  "wav": "",
+  "note": "",
+  "diarization": [
+    {"idx": 0, "start": 3.0, "end": 9.0, "label": "Alice", "source": "db", "embedding": [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]},
+    {"idx": 1, "start": 10.0, "end": 13.0, "label": "Unknown (SPEAKER_01)", "source": "unknown", "embedding": [1.0, 0.05, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]},
+    {"idx": 2, "start": 14.0, "end": 17.0, "label": "Unknown (SPEAKER_01)", "source": "unknown", "embedding": [0.95, 0.1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]},
+    {"idx": 3, "start": 20.0, "end": 23.0, "label": "Unknown (SPEAKER_01)", "source": "unknown", "embedding": [0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]},
+    {"idx": 4, "start": 25.0, "end": 30.0, "label": "Unknown (SPEAKER_01)", "source": "unknown", "embedding": [0.05, 0.98, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]}
+  ],
+  "transcript": [
+    {"start": 0.5, "end": 2.0, "text": "local intro", "label": "Me (Local)"},
+    {"start": 3.5, "end": 8.0, "text": "alice speaking", "label": "Alice"},
+    {"start": 11.0, "end": 12.5, "text": "cluster one line", "label": "Unknown (SPEAKER_01)"},
+    {"start": 21.0, "end": 22.5, "text": "cluster two line", "label": "Unknown (SPEAKER_01)"}
+  ]
+}

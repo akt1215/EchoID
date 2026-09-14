@@ -1,0 +1,79 @@
+# Copy this file to config.yaml and customize it. config.yaml is private and
+# gitignored so names, project terms, and local paths never enter commits.
+
+paths:
+  workspace: workspace
+  obsidian_vault: Obsidian_Vault
+  speaker_db: speakers.json
+
+identity:
+  # Names that refer to the local participant in Zoom. Add your own names.
+  local_names: []
+
+audio:
+  capture_backend: sck  # sck | blackhole
+  sample_rate: 48000
+  mic_device: null
+  blackhole_device: null
+  ingest:
+    frame_interval: 4.0
+
+denoiser:
+  enabled: true
+  method: deepfilter  # noisereduce | deepfilter
+
+transcription:
+  # Local by default. Set to groq only when you intend to upload audio.
+  backend: local  # local | groq
+  model: large-v3-turbo
+  device: cpu
+  compute_type: default
+  beam_size: 5
+  groq_model: whisper-large-v3-turbo
+  chunk_seconds: 600
+  style_prompt: "The following is a recording of a meeting."
+  glossary: []
+
+diarization:
+  model: pyannote/speaker-diarization-3.1
+  target_channel: 1
+  min_segment_duration: 0.5
+  device: auto
+
+biometrics:
+  backend: wespeaker_onnx  # speechbrain | wespeaker_onnx
+  speechbrain_model: speechbrain/spkrec-ecapa-voxceleb
+  wespeaker_model: WESPEAKER/wespeaker-voxceleb-resnet34
+  center_embeddings: false
+  min_speech: 30.0
+  min_turn_seconds: 0.5
+  merge_threshold: 0.75
+  db_threshold: 0.55
+  db_margin: 0.20
+  collapse_similarity: 0.75
+  embedding_update_rate: 0.2
+  denoise_for_embeddings: false
+  device: auto
+  placeholder_min_duration: 60
+
+llm:
+  # Local Ollama model. A cloud Ollama model may be selected deliberately.
+  model: gpt-oss:20b
+  timeout: 120
+
+visual:
+  polling_interval: 2.0
+  zoom_min_window_size: 300
+  frame_interval: 4.0
+  match_window: 2.0
+
+name_reader:
+  # Off by default. ollama is local; gemini uploads selected Zoom frames.
+  backend: off  # off | ollama | gemini
+  gemini_model: gemini-3.1-flash-lite
+  ollama_model: qwen2.5-vl:7b
+  frames_per_cluster: 3
+  min_agreement: 2
+
+zoom_monitor:
+  polling_interval: 1.0

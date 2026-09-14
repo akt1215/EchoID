@@ -1,0 +1,12 @@
+.DS_Store
+.idea/
+__pycache__/
+*.pyc
+meeting_recording/
+tmp_speechbrain/
+*.wav
+workspace/
+config.yaml
+_env.local.sh
+.tui_state.yaml
+.tui_tui_state.yaml
