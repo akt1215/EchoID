@@ -54,7 +54,7 @@ Post-processing pipeline (shared by both modes):
 
 | File | Purpose |
 |------|---------|
-| `audio_recorder.py` | Dual-channel `sounddevice` recorder. Mic → channel 0, BlackHole → channel 1. Polls `ZoomMonitor` to zero mic audio when Zoom is muted locally. Non-blocking queue drain prevents data loss from mismatched callback rates between devices. Optionally owns an `AudioMonitor` for real-time passthrough. |
+| `audio_recorder.py` | Dual-channel recorder. On macOS 15+, ScreenCaptureKit supplies mic → channel 0 and system audio → channel 1 on one clock, preventing drift. The legacy BlackHole backend uses separate `sounddevice` streams. Polls `ZoomMonitor` to zero mic audio when Zoom is muted locally. |
 | `audio_monitor.py` | Real-time audio relay. Reads BlackHole's capture side and plays to the system default output device (`device=None`). Automatically follows output changes (speakers ↔ headphones ↔ AirPods) with no reconfiguration. Uses a lock-free queue to decouple input/output callback rates. Disabled via `--no-monitor`. |
 | `zoom_monitor.py` | AppleScript-based polling of Zoom's mute menu item. Defaults to *unmuted* on failure (so recording isn't silently blanked if Accessibility permissions are missing). |
 | `visual_ingestion.py` | Quartz-based screen capture of the zoom.us window. Saves periodic downscaled frames (named by elapsed ms) to `<wav>.frames/` during recording; the vision-LLM name reader (`ai/name_reader.py`) reads the active speaker's name from a few of these per unrecognized cluster in post-processing. Replaced the old Tesseract OCR. |
@@ -97,10 +97,9 @@ Single YAML file controlling all model choices, paths, thresholds, and toggles:
 cp config.example.yaml config.yaml
 ./setup.sh
 
-# Grant Screen Recording permission to your terminal (Terminal / iTerm / VS Code)
-# in System Settings > Privacy & Security > Screen Recording, then quit and
-# reopen the terminal. The default ScreenCaptureKit backend needs this even for
-# audio-only capture — no BlackHole install required.
+# Grant Screen Recording and Microphone permissions to your terminal
+# (Terminal / iTerm / VS Code), then quit and reopen it. The default
+# ScreenCaptureKit backend needs macOS 15+ and both permissions.
 # (To use the legacy BlackHole backend instead, set capture_backend: blackhole in
 #  config.yaml and install BlackHole from https://github.com/ExistentialAudio/BlackHole)
 
@@ -184,6 +183,18 @@ system input device is the immediate workaround.
 
 The `sck` backend requires **macOS 15+**; on older macOS it fails loud — use the legacy
 BlackHole backend below (it still uses two clocks and can drift).
+
+### Repair recordings made by the old dual-clock backend
+
+If a legacy recording contains an increasingly delayed duplicate voice, repair it
+without overwriting the source:
+
+```bash
+.venv/bin/python -m tools.deecho_native_recording workspace/meeting_....wav
+```
+
+The tool estimates the clock drift, aligns the microphone track, suppresses its
+remote-speaker bleed, and writes a separate `_deechoed.wav` file.
 
 ### Legacy BlackHole backend (fallback)
 
