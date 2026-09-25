@@ -1,6 +1,7 @@
 # EchoID — Local, Identity-Aware Meeting Notes
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![CI](https://github.com/akt1215/EchoID/actions/workflows/ci.yml/badge.svg)](https://github.com/akt1215/EchoID/actions/workflows/ci.yml)
 [![Platform](https://img.shields.io/badge/Platform-macOS%2015%2B%20%7C%20Apple%20Silicon-black?logo=apple)](https://www.apple.com/macos/)
 [![Python 3.13+](https://img.shields.io/badge/Python-3.13+-blue?logo=python)](https://www.python.org/)
 [![Privacy](https://img.shields.io/badge/Privacy-100%25%20Local--First-success)](https://github.com/akt1215/EchoID)
