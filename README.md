@@ -1,36 +1,78 @@
 # EchoID — Local, Identity-Aware Meeting Notes
 
-Local-first macOS app that records Zoom meetings, transcribes and diarizes them,
-runs LLM summarization, and exports structured notes to an Obsidian vault. Its
-default configuration keeps meeting data on the machine; optional cloud
-backends can be enabled per run when their speed or accuracy is worth sending
-audio or frames to a provider.
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Platform](https://img.shields.io/badge/Platform-macOS%2015%2B%20%7C%20Apple%20Silicon-black?logo=apple)](https://www.apple.com/macos/)
+[![Python 3.13+](https://img.shields.io/badge/Python-3.13+-blue?logo=python)](https://www.python.org/)
+[![Privacy](https://img.shields.io/badge/Privacy-100%25%20Local--First-success)](https://github.com/akt1215/EchoID)
+[![Portfolio](https://img.shields.io/badge/Portfolio-akt1215.github.io-blueviolet)](https://akt1215.github.io/projects/echoid/)
 
-## Intention
+Local-first macOS application that records Zoom meetings, transcribes and diarizes them, resolves speaker identities via voice biometrics and visual name tags, runs local LLM summarization, and exports structured notes directly into an Obsidian vault.
 
-Manually taking notes during Zoom meetings is distracting. Most note-taking assistants are cloud-based, raising privacy concerns. This project exists to provide a local, privacy-respecting alternative that:
+Its default configuration keeps all meeting audio, transcripts, and speaker profiles strictly on the local machine. Optional cloud backends can be enabled when their speed or accuracy is worth sending audio or frames to a provider.
 
-- Records meeting audio (local microphone + remote participants via ScreenCaptureKit, or BlackHole loopback as a fallback)
-- Identifies *who* spoke *when* using speaker diarization
-- Resolves speaker identities using voice biometrics and visual OCR of Zoom's name tags
-- Transcribes speech to text with word-level timestamps
-- Summarises the transcript via a local LLM (Ollama)
-- Exports everything as structured Markdown to an Obsidian vault with wikilinks for graph view
+## Table of Contents
 
-## Architecture
+- [Key Features](#key-features)
+- [Architecture & Pipeline](#architecture--pipeline)
+- [File Map](#file-map)
+- [Setup & Prerequisites](#setup)
+- [Quick Start](#quick-start)
+- [Audio Setup (macOS 15+)](#audio-setup-one-time)
+- [Usage Workflows](#usage)
+- [Sample Obsidian Note](#sample-obsidian-output)
+- [Audio Layouts: Dual-Channel vs. Mixed Ingest](#two-audio-layouts-recordings-this-tool-made-vs-everything-else)
+- [Known Issues & Workarounds](#known-issues--workarounds)
+- [Roadmap & Possible Improvements](#possible-improvements)
+- [License](#license)
 
-```
-┌─────────────────────────────────────────────────────┐
-│                    main.py                           │
-│  Orchestrator: parse args → record/reprocess →      │
-│  pipeline (diarize → biometrics → transcribe →      │
-│  summarize → export)                                 │
-└──────┬──────┬──────┬──────┬──────┬──────┬───────────┘
-       │      │      │      │      │      │
-  ┌────┘  ┌───┘  ┌──┘  ┌──┘  ┌──┘  ┌──┘
-  ▼       ▼      ▼     ▼     ▼     ▼
-core/    core/  ai/   ai/   ai/  export/
-recorder  vision diar  bio   asr  llm+obsidian
+## Key Features
+
+- **Drift-Free Single-Clock Capture**: On macOS 15+, ScreenCaptureKit captures both local microphone input and remote system audio on a shared system clock into a dual-channel WAV (Channel 0: local mic, Channel 1: remote audio). Eliminates clock drift and removes the need for virtual loopback devices like BlackHole.
+- **Multi-Modal Speaker Attribution**: Audio diarization alone only provides anonymous labels (`SPEAKER_00`). EchoID resolves real participant names using a three-tier pipeline: (1) visual OCR from Zoom participant name tags, (2) mean-centered cosine matching against a local voiceprint database (`speakers.json`) via WeSpeaker ResNet34 ONNX, and (3) mic-channel energy dominance to guarantee local speaker attribution.
+- **Local-First & Privacy-Preserving**: Runs completely offline by default using local WhisperX transcription and local Ollama LLMs. No meeting audio or transcripts leave your machine unless optional cloud backends (Groq / Gemini) are explicitly configured in `config.yaml`.
+- **Obsidian Graph Integration**: Generates structured Markdown with YAML frontmatter, meeting metadata, action items, and automated `[[wikilinks]]` for participants and key concepts for seamless Obsidian graph view connectivity.
+- **Interactive Terminal UI (TUI) & CLI**: Launch either via `./record.sh` for an unattended command-line workflow or `./tui.sh` for a rich Textual terminal interface (Home, Recording, Pipeline Progress, Speaker Naming, and Meeting Review).
+
+## Architecture & Pipeline
+
+```mermaid
+flowchart TD
+    subgraph Ingestion ["1. Audio & Visual Capture (ScreenCaptureKit)"]
+        direction TB
+        A1["Channel 0: Local Microphone"]
+        A2["Channel 1: Remote Participants (System Audio)"]
+        A3["Periodic Zoom Window Frames (Quartz)"]
+    end
+
+    subgraph Preprocess ["2. Audio Health & Denoising"]
+        direction TB
+        B1["Single-Clock Shared Frame Synchronization"]
+        B2["Spectral Noise Reduction (noisereduce / deepfilter)"]
+    end
+
+    subgraph Identification ["3. Multi-Modal Speaker Identity"]
+        direction TB
+        C1["PyAnnote Diarization (speaker-diarization-3.1)"]
+        C2["WeSpeaker ResNet34 ONNX Centered Embeddings"]
+        C3["Vision-LLM Active Name-Tag OCR"]
+        C4["Three-Tier Resolution & Cluster Merge"]
+    end
+
+    subgraph ASR_LLM ["4. Transcription & Synthesis"]
+        direction TB
+        D1["WhisperX Forced Alignment (large-v3-turbo on CPU)"]
+        D2["Channel Energy Dominance Override (Local Speaker)"]
+        D3["Ollama Structured Summary (Executive Summary, Action Items)"]
+    end
+
+    subgraph Output ["5. Obsidian Knowledge Graph"]
+        E1["Structured Markdown Note with Frontmatter & [[Wikilinks]]"]
+    end
+
+    Ingestion --> Preprocess
+    Preprocess --> Identification
+    Identification --> ASR_LLM
+    ASR_LLM --> Output
 ```
 
 ## File Map
@@ -65,7 +107,7 @@ Post-processing pipeline (shared by both modes):
 | File | Purpose |
 |------|---------|
 | `diarization.py` | PyAnnote `speaker-diarization-3.1` via HuggingFace Pipeline. Reads a single channel from the WAV file into an in-memory PyTorch tensor, bypassing the broken `torchcodec` shared-library linking. Filters segments shorter than `min_segment_duration` and removes overlaps > 0.5 s. |
-| `biometrics.py` | Speaker embedding extraction and identity matching. Default backend: `speechbrain/spkrec-resnet-voxceleb` via SB `EncoderClassifier`. Alternative backend: WeSpeaker ONNX Runtime (if pip package becomes available). Matches against a persistent JSON database using cosine similarity. Implements exponential moving average for embedding updates (`update_rate`). Contains a three-tier resolution strategy: (1) visual OCR match by timestamp, (2) pyannote speaker ID remembered from previous visual match, (3) embedding similarity against known speakers. |
+| `biometrics.py` | Speaker embedding extraction through the default WeSpeaker ResNet34 ONNX backend (with SpeechBrain ECAPA retained as an alternative). Matches against a persistent JSON database using cosine similarity in a mean-centered space. Implements exponential moving average (EMA) updates for continuous voiceprint refinement. |
 | `transcription.py` | WhisperX pipeline: `large-v3-turbo` transcription → wav2vec2 forced alignment → `assign_word_speakers()` to map diarization segments to transcribed words. Runs on CPU (`ctranslate2` does not support MPS). Sets `SSL_CERT_FILE` for macOS certificate compatibility. |
 
 ### `export/` — Output
@@ -73,7 +115,7 @@ Post-processing pipeline (shared by both modes):
 | File | Purpose |
 |------|---------|
 | `llm_processor.py` | Sends the formatted transcript to Ollama at `localhost:11434` with a structured prompt requesting JSON with `executive_summary`, `action_items`, and `entities`. Multi-layer JSON parsing: direct `json.loads`, then regex fallback for code-fence wrapped or embedded JSON. Returns graceful error placeholders on failure. |
-| `obsidian_writer.py` | Generates a Markdown file with YAML front-matter (`date`, `type: meeting`, `participants` with wikilinks, `tags`). Injects `[[wikilinks]]` for entities and speaker names using regex word-boundary matching with negative lookbehind/lookahead to avoid double-bracketing. |
+| `obsidian_writer.py` | Generates structured Markdown with YAML front-matter (`date`, `type: meeting`, `participants` with wikilinks, `tags`), executive summary, action items, speaker identification evidence, and wikilinked entities. |
 
 ### `config.yaml` — Central Configuration
 
@@ -242,6 +284,40 @@ backend avoids this entirely.
 
 Audio output is dual-channel WAV: channel 0 = microphone, channel 1 = remote participants (captured via ScreenCaptureKit by default, or BlackHole on the legacy backend).
 
+## Sample Obsidian Output
+
+Exported meeting notes integrate directly into an Obsidian vault with YAML frontmatter, wikilinks, and structured sections:
+
+```markdown
+---
+date: 2026-09-24
+type: meeting
+participants:
+  - "[[Alex Morgan]]"
+  - "[[Dr. Sarah Chen]]"
+tags:
+  - meeting
+  - project/echoid
+---
+
+# Meeting — 2026-09-24 14:00
+
+## Executive Summary
+Discussed the transition to ScreenCaptureKit for single-clock audio capture on macOS 15, resolving legacy clock drift between microphone and loopback audio. Verified WeSpeaker ONNX embeddings for speaker verification.
+
+## Action Items
+- [ ] Implement automated regression test for audio channel pairing (@Alex Morgan)
+- [ ] Benchmark hosted transcription options against WhisperX (@Dr. Sarah Chen)
+
+## Speaker Identification
+- **Alex Morgan**: Local microphone channel energy dominance
+- **Dr. Sarah Chen**: Voiceprint match (score: 0.84, margin: +0.28 over runner-up)
+
+## Transcript
+**Alex Morgan** (00:02): Let's start by reviewing the audio drift issue.
+**Dr. Sarah Chen** (00:15): On macOS 15, the single-clock helper completely fixed the offset.
+```
+
 ### Two audio layouts: recordings this tool made vs. everything else
 
 `main.py`/`record.sh --from-file` accepts more than its own WAVs. `core/ingest.py`
@@ -289,21 +365,18 @@ Two tools support the mixed path:
 
 - **torchcodec linking warning**: FFmpeg library version mismatch between bundled torchcodec dylibs and Homebrew's FFmpeg 8. Fixed by adding rpath and compat symlinks (`install_name_tool` + `ln -s`). The pipeline already bypasses torchcodec by passing audio in-memory.
 - **WhisperX pins torch 2.8.0**: Causes torchcodec warnings but functional via in-memory audio workaround.
-- **WeSpeaker not pip-installable**: Using `speechbrain/spkrec-resnet-voxceleb` instead. WeSpeaker ONNX config option preserved for future availability.
+- **Embedding-model migrations invalidate stored voiceprints**: WeSpeaker emits 256-dimensional vectors while the older SpeechBrain ECAPA backend emitted 192-dimensional vectors. Rebuild `speakers.json` when switching backends; the dimension guard prevents incompatible vectors from being blended.
 - **DeepFilterNet numpy conflict**: `deepfilternet` declares `numpy<2.0` but works fine with numpy 2.x. Pip will emit a version warning but it's harmless.
 - **OpenCV/AV libavdevice conflict**: Both `opencv-python` and `av` (required by `faster-whisper`) bundle FFmpeg dylibs with overlapping Objective-C class definitions (`AVFFrameReceiver`, `AVFAudioReceiver`). macOS raises duplicate-class warnings and may send SIGKILL. Fixed by stripping the `__DATA_CONST,__objc_classlist` section from `cv2`'s copy using `llvm-objcopy` — applied automatically by `./setup.sh`. Re-run `./setup.sh` after recreating the virtual environment.
 
 ## Possible Improvements
 
-- **Model upgrades**: Replace WhisperX with Canary-Qwen 2.5B or Qwen3-ASR-1.7B for potentially better accuracy. Replace speechbrain embeddings with WeSpeaker ONNX once pip package is available.
+- **Hosted ASR evaluation**: Benchmark hosted transcription services (e.g., Groq / Qwen-ASR) against the current local WhisperX path. Running large transcription models locally is opt-in to avoid sustained CPU/GPU heat.
+- **Desktop packaging**: Package the existing Textual TUI workflow for straightforward installation without adding duplicate GUI maintenance overhead.
+- **Meeting search index**: Rebuildable SQLite full-text search across transcripts and summaries if vault search requires deeper querying.
 - **Real-time transcription**: Stream audio to the ASR model during recording instead of post-processing from WAV.
 - **Live speaker overlay**: Display the currently identified speaker on screen during the meeting.
-- **GUI front-end**: Tkinter or SwiftUI wrapper around `main.py` for non-CLI usage.
-- **Meeting database**: Index past meetings in SQLite for full-text search across summaries and transcripts.
-- **Confidence scores**: Surface diarization and biometric confidence in the Obsidian output.
-- **Parallel pipeline**: Run transcription and biometric extraction concurrently on different audio channels to reduce wall-clock time.
-
-- **Speaker DB export/import**: Share speaker embeddings across workstations.
+- **Speaker DB export/import**: Share verified speaker embeddings across workstations.
 - **Docker environment**: Containerise the Python environment with all ffmpeg/torchcodec compat fixes pre-applied.
 - **Automated meeting detection**: Use AppleScript or Notifications to detect when a Zoom meeting starts and auto-launch recording.
 
