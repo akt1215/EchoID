@@ -1,6 +1,6 @@
 # EchoID — Local, Identity-Aware Meeting Notes
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![CI](https://github.com/akt1215/EchoID/actions/workflows/ci.yml/badge.svg)](https://github.com/akt1215/EchoID/actions/workflows/ci.yml)
 [![Platform](https://img.shields.io/badge/Platform-macOS%2015%2B%20%7C%20Apple%20Silicon-black?logo=apple)](https://www.apple.com/macos/)
 [![Python 3.13+](https://img.shields.io/badge/Python-3.13+-blue?logo=python)](https://www.python.org/)
@@ -382,5 +382,4 @@ Two tools support the mixed path:
 - **Automated meeting detection**: Use AppleScript or Notifications to detect when a Zoom meeting starts and auto-launch recording.
 
 ## License
-
-MIT
+GNU General Public License v3.0 (GPLv3) — see the [LICENSE](LICENSE) file for details.

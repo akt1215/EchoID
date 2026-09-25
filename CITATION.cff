@@ -9,7 +9,7 @@ version: 1.0.0
 date-released: 2026-09-14
 url: "https://github.com/akt1215/EchoID"
 repository-code: "https://github.com/akt1215/EchoID"
-license: MIT
+license: GPL-3.0
 keywords:
   - speaker-diarization
   - voice-biometrics
